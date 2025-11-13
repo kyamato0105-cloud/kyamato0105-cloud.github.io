@@ -1,0 +1,694 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover" />
+  <title>White Line AR – Lava Game (Full, Low-Latency Audio + Combo/Score + Countdown + Centered Start)</title>
+  <style>
+    html,body{margin:0;height:100%;background:#000;color:#fff;font-family:system-ui,-apple-system,sans-serif;overscroll-behavior:none;touch-action:manipulation}
+    #wrap{position:fixed;inset:0;overflow:hidden}
+
+    /* カメラ&描画 */
+    video,canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;pointer-events:none}
+    video{z-index:0} canvas{z-index:1}
+
+    /* 上部UI（ヘッダー） — ノッチ対応＆常に最前面 */
+    header#ui{
+      position:absolute;left:0;right:0;top:calc(env(safe-area-inset-top,0px));
+      display:flex;gap:8px;flex-wrap:wrap;justify-content:center;align-items:center;
+      padding:calc(8px + env(safe-area-inset-top,0px)) 10px 10px 10px;pointer-events:auto;
+      background:linear-gradient(to bottom, rgba(0,0,0,.55),rgba(0,0,0,0));
+      transition:opacity .25s ease;z-index:6000;transform:translateZ(0)
+    }
+    button,select{padding:10px 14px;border:0;border-radius:12px;font-weight:700;cursor:pointer}
+    #startGame{background:#ff5a36;color:#fff}
+
+    /* 左下の調整UI（バー） */
+    .panel{
+      position:absolute;left:10px;bottom:10px;background:rgba(0,0,0,.45);
+      padding:10px;border-radius:12px;color:#fff;font-size:12px;z-index:2000;pointer-events:auto;
+      max-width:min(380px,88vw);backdrop-filter:blur(2px)
+    }
+    .panel label{display:block;margin:.25rem 0}
+    .tiny{font-size:11px;opacity:.8}
+
+    /* ハート（左上・シアン）— はみ出し防止＆ノッチ対応 */
+    .hearts{position:absolute;top:calc(env(safe-area-inset-top,0px) + 10px);left:10px;display:flex;flex-wrap:wrap;gap:6px;z-index:5500;max-width:calc(100vw - 20px)}
+    .heart{width:min(34px,6.5vw);height:min(34px,6.5vw);filter:drop-shadow(0 1px 1px rgba(0,0,0,.6))}
+    .heart svg{width:100%;height:100%}
+
+    /* 中央の白い点（判定帯のガイド） */
+    .probe{
+      position:absolute;left:50%;transform:translateX(-50%);bottom:45%;
+      width:12px;height:12px;border-radius:999px;background:#fff;border:2px solid rgba(0,0,0,.6);
+      box-shadow:0 0 6px rgba(255,255,255,.8);pointer-events:none;z-index:35
+    }
+
+    /* ゲームオーバー */
+    .overlay{position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.6);backdrop-filter:blur(3px);z-index:5000}
+    .overlay .box{padding:18px 24px;background:rgba(0,0,0,.65);border-radius:16px;text-align:center;border:1px solid rgba(255,255,255,.15)}
+
+    /* タップして開始（中央配置） */
+    .tapstart{
+      position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.66);
+      z-index:4500;cursor:pointer;user-select:none;pointer-events:auto;
+    }
+    .tapstart .inner{
+      text-align:center;background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.2);
+      padding:18px 20px;border-radius:16px;max-width:80vw;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    }
+    .tapstart button{
+      margin-top:12px;padding:12px 18px;border:0;border-radius:12px;font-weight:800;background:#18a0fb;color:#fff;
+    }
+
+    /* スタート時のフラッシュ */
+    .lava-flash{position:absolute;inset:0;pointer-events:none;background:radial-gradient(circle at center, rgba(255,80,0,.35), rgba(255,0,0,.65));opacity:0;transition:opacity .8s ease-out;z-index:1500}
+    .lava-flash.show{opacity:1}
+
+    /* 右下・音声状態 */
+    .audiostatus{position:absolute;right:10px;bottom:10px;padding:8px 10px;border-radius:10px;background:rgba(0,0,0,.45);font-size:12px;z-index:2200}
+    .badge{display:inline-block;padding:3px 6px;border-radius:999px;background:#0a0;color:#fff;font-weight:700}
+    .badge.off{background:#a00}
+
+    /* 🔢 スコアHUD（右上） */
+    .scorehud{
+      position:absolute;top:10px;right:10px;z-index:3600;
+      background:rgba(0,0,0,.45);border:1px solid rgba(255,255,255,.12);
+      border-radius:12px;padding:8px 12px;font-weight:800;letter-spacing:.02em;
+      box-shadow:0 1px 6px rgba(0,0,0,.3);user-select:none;pointer-events:none
+    }
+    .scorehud .label{font-size:11px;opacity:.8}
+    .scorehud .value{font-size:20px;line-height:1.1}
+
+    /* ✨ コンボ演出（斜め出し） */
+    #comboLayer{position:absolute;inset:0;pointer-events:none;z-index:3400;overflow:visible}
+    .combo-pop{
+      position:absolute;transform-origin:center;will-change:transform,opacity;pointer-events:none;
+      padding:6px 10px;border-radius:999px;border:1px solid rgba(255,255,255,.22);
+      font-weight:900;letter-spacing:.03em;
+      background:linear-gradient(135deg, rgba(0,234,255,.85), rgba(0,90,120,.85));
+      text-shadow:0 1px 1px rgba(0,0,0,.55);
+      box-shadow:0 4px 12px rgba(0,0,0,.35);
+      opacity:0; transform:translate(-50%,-50%) scale(.9) rotate(-18deg);
+      animation:comboPop .9s ease-out forwards
+    }
+    .combo-pop.big{background:linear-gradient(135deg, rgba(255,200,0,.95), rgba(255,120,0,.9)); transform:translate(-50%,-50%) scale(1) rotate(-12deg)}
+    @keyframes comboPop{
+      0%{opacity:0; transform:translate(-50%,-50%) scale(.85) rotate(var(--rot,-18deg))}
+      20%{opacity:1; transform:translate(-50%,-50%) scale(1.05) rotate(var(--rot,-18deg))}
+      100%{opacity:0; transform:translate(-50%,-50%) translate(0,-36px) scale(1) rotate(var(--rot,-18deg))}
+    }
+
+    /* ⏳ カウントダウンUI（全面） */
+    .countdown{
+      position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+      background:rgba(0,0,0,.55);backdrop-filter:blur(2px);z-index:4600;user-select:none
+    }
+    .countdown .digit{
+      font-size:18vw; font-weight:900; line-height:1; color:#fff;
+      text-shadow:0 8px 24px rgba(0,0,0,.6);
+      animation:pop .8s ease both
+    }
+    .countdown .start{
+      font-size:14vw; font-weight:900; letter-spacing:.05em; color:#fff;
+      padding:.2em .5em; border-radius:16px;
+      background:linear-gradient(135deg,rgba(0,200,70,.95),rgba(0,120,40,.95));
+      box-shadow:0 10px 28px rgba(0,0,0,.45); border:1px solid rgba(255,255,255,.2);
+      animation:flash .9s ease both
+    }
+    @keyframes pop{
+      0%{opacity:0; transform:scale(.6)}
+      40%{opacity:1; transform:scale(1.08)}
+      100%{opacity:0; transform:scale(1)}
+    }
+    @keyframes flash{
+      0%{opacity:0; transform:scale(.8)}
+      25%{opacity:1; transform:scale(1)}
+      100%{opacity:0}
+    }
+  </style>
+</head>
+<body>
+<div id="wrap">
+  <video id="cam" playsinline webkit-playsinline autoplay muted></video>
+  <canvas id="view"></canvas>
+
+  <header id="ui">
+    <button id="startCam">カメラ開始</button>
+    <button id="startGame">ゲーム開始</button>
+    <button id="switch">カメラ切替</button>
+    <select id="devices"></select>
+    <select id="difficulty">
+      <option value="easy">簡単</option>
+      <option value="normal" selected>普通</option>
+      <option value="hard">難しい</option>
+    </select>
+  </header>
+
+  <!-- ハート -->
+  <div class="hearts" id="hearts"></div>
+
+  <!-- 中央ガイド点 -->
+  <div class="probe" title="この高さ帯で判定（靴は無視）"></div>
+
+  <!-- 白線調整UI -->
+  <div class="panel" id="panel">
+    <b>白線検出</b>
+    <label>明るさ: <input id="minRGB" type="range" min="80" max="255" value="170"> <span id="minRGBv">170</span></label>
+    <label>色差:   <input id="maxDiff" type="range" min="10" max="100" value="40"> <span id="maxDiffv">40</span></label>
+
+    <div style="margin-top:6px"><b>溶岩（写真テクスチャ）</b> <span class="tiny">※ 今は静止固定</span></div>
+    <label>スケール: <input id="lavaScale" type="range" min="60" max="250" value="140"> <span id="lavaScalev">140%</span></label>
+    <label>コントラスト: <input id="lavaContrast" type="range" min="100" max="220" value="155"> <span id="lavaContrastv">155%</span></label>
+    <label>彩度:   <input id="lavaSaturate" type="range" min="100" max="220" value="145"> <span id="lavaSaturatev">145%</span></label>
+    <label>色相:   <input id="lavaHue" type="range" min="-30" max="30" value="3"> <span id="lavaHuev">+3°</span></label>
+  </div>
+
+  <!-- スコアHUD -->
+  <div class="scorehud" id="scoreHud">
+    <div class="label">SCORE</div>
+    <div class="value" id="scoreValue">0</div>
+  </div>
+
+  <!-- コンボ演出レイヤー -->
+  <div id="comboLayer"></div>
+
+  <!-- カウントダウン -->
+  <div class="countdown" id="countdown"><div class="digit" id="countDigit"></div></div>
+
+  <!-- ゲームオーバー -->
+  <div class="overlay" id="gameOver">
+    <div class="box">
+      <h1>GAME OVER</h1>
+      <button id="retryBtn">もう一度</button>
+    </div>
+  </div>
+
+  <!-- タップして開始：中央配置 -->
+  <div class="tapstart" id="tapStart">
+    <div class="inner">
+      <h2 style="margin:0 0 8px 0;font-size:18px">タップして開始</h2>
+      <p style="margin:0 0 10px 0;font-size:13px;color:#cfe">カメラと低遅延オーディオの準備をします</p>
+      <button id="tapStartBtn">カメラを使う</button>
+    </div>
+  </div>
+
+  <div class="lava-flash" id="lavaFlash"></div>
+  <div class="audiostatus" id="audioStatus">Audio <span class="badge off" id="audioBadge">OFF</span></div>
+</div>
+
+<!-- 必要素材: lava.jpg / bgm.mp3 / hit.mp3 / hit2.mp3 / click.mp3 / combo.mp3 / countdown.mp3 / start.mp3 -->
+<script>
+(function(){
+/* ===========================================================
+   ✅ WebAudio：低遅延サウンド・エンジン + 強制解錠（＋ビープfallback）
+=========================================================== */
+class AudioEngine{
+  constructor(){
+    this.ctx=null; this.buffers=new Map(); this.masterGain=null;
+    this.bgmNode=null; this.bgmGain=null; this.ready=false;
+  }
+  async init(){
+    if(this.ctx) return;
+    const hint = (/(iPhone|iPad|iPod|Android)/i.test(navigator.userAgent)) ? 'interactive' : 'balanced';
+    this.ctx = new (window.AudioContext||window.webkitAudioContext)({latencyHint:hint});
+    this.masterGain = this.ctx.createGain();
+    this.masterGain.gain.value = 1.0;
+    this.masterGain.connect(this.ctx.destination);
+    document.addEventListener('visibilitychange',()=>{
+      if(document.visibilityState==='visible' && this.ctx.state==='suspended') this.ctx.resume();
+    });
+  }
+  async unlock(){ await this.init(); if(this.ctx.state!=='running') await this.ctx.resume();
+    const silent = this.ctx.createBuffer(1, 1, this.ctx.sampleRate);
+    const src = this.ctx.createBufferSource(); src.buffer = silent; src.connect(this.ctx.destination);
+    try{ src.start(0); }catch{} }
+  async loadAll(map){ // map: {name:url}
+    const entries = Object.entries(map);
+    await Promise.all(entries.map(async ([name,url])=>{
+      try{
+        const res = await fetch(url, {cache:'no-store'});
+        if(!res.ok) throw new Error('fetch failed');
+        const arr = await res.arrayBuffer();
+        const buf = await this.ctx.decodeAudioData(arr);
+        this.buffers.set(name, buf);
+      }catch(e){
+        // 失敗時は空の印（フォールバック再生に使う）
+        this.buffers.set(name, null);
+      }
+    }));
+    this.ready=true; return true;
+  }
+  play(name,{gain=1,rate=1,when=0,detune=0, loop=false}={}){
+    if(!this.ready) return null;
+    const now=this.ctx.currentTime; const startAt=Math.max(now+0.005, now+when);
+
+    // フォールバック：バッファが無い時はビープ合成
+    if(!this.buffers.get(name)){
+      const o=this.ctx.createOscillator(); const g=this.ctx.createGain();
+      let freq=440;
+      if(name==='countdown') freq=660;
+      else if(name==='start') freq=880;
+      else if(name==='combo') freq=740;
+      o.frequency.value=freq*rate; g.gain.value=0.08*gain;
+      o.connect(g).connect(this.masterGain);
+      try{ o.start(startAt); o.stop(startAt+0.12); }catch{}
+      return null;
+    }
+
+    const src=this.ctx.createBufferSource(); src.buffer=this.buffers.get(name);
+    src.playbackRate.value=rate; try{src.detune.value=detune;}catch{}
+    src.loop=loop;
+    const g=this.ctx.createGain(); g.gain.value=gain; src.connect(g).connect(this.masterGain);
+    src.start(startAt);
+    src.onended=()=>{try{src.disconnect(); g.disconnect();}catch{}};
+    return {src, gain:g};
+  }
+  startLoop(name,{gain=0.35,offset=0}={}){
+    const ret=this.play(name,{gain,when:0.02});
+    if(ret){ ret.src.loop=true; ret.src.loopStart=0; ret.src.loopEnd=ret.src.buffer.duration; this.bgmNode=ret.src; this.bgmGain=ret.gain; }
+  }
+  stopLoop(){ if(this.bgmNode){ try{this.bgmNode.stop();}catch{} try{this.bgmNode.disconnect(); this.bgmGain.disconnect();}catch{} this.bgmNode=this.bgmGain=null; } }
+  setBgmGain(v){ if(this.bgmGain) this.bgmGain.gain.value=v; }
+}
+const audio = new AudioEngine();
+const audioBadge = document.getElementById('audioBadge');
+function markAudio(on){ audioBadge.textContent=on?'ON':'OFF'; audioBadge.classList.toggle('off', !on); }
+
+/* ===========================================================
+   変数取得
+=========================================================== */
+const dpr=Math.min(2, window.devicePixelRatio||1);
+const video=document.getElementById('cam');
+const canvas=document.getElementById('view'); const ctx=canvas.getContext('2d',{alpha:true});
+
+const startCamBtn=document.getElementById('startCam');
+const startGameBtn=document.getElementById('startGame');
+const switchBtn=document.getElementById('switch');
+const devicesSel=document.getElementById('devices');
+const diffSel=document.getElementById('difficulty');
+
+const ui=document.getElementById('ui');
+const panel=document.getElementById('panel');
+const heartsEl=document.getElementById('hearts');
+const overlayEl=document.getElementById('gameOver');
+const retryBtn=document.getElementById('retryBtn');
+const lavaFlashEl=document.getElementById('lavaFlash');
+
+/* sliders */
+const minRGBInput=document.getElementById('minRGB');
+const maxDiffInput=document.getElementById('maxDiff');
+const minRGBv=document.getElementById('minRGBv');
+const maxDiffv=document.getElementById('maxDiffv');
+const lavaScale=document.getElementById('lavaScale');
+const lavaContrast=document.getElementById('lavaContrast');
+const lavaSaturate=document.getElementById('lavaSaturate');
+const lavaHue=document.getElementById('lavaHue');
+const lavaScalev=document.getElementById('lavaScalev');
+const lavaContrastv=document.getElementById('lavaContrastv');
+const lavaSaturatev=document.getElementById('lavaSaturatev');
+const lavaHuev=document.getElementById('lavaHuev');
+
+/* タップして開始（中央） */
+const tapStart=document.getElementById('tapStart');
+const tapStartBtn=document.getElementById('tapStartBtn');
+
+/* 🔢 スコア&コンボ UI */
+const scoreHud=document.getElementById('scoreHud');
+const scoreValueEl=document.getElementById('scoreValue');
+const comboLayer=document.getElementById('comboLayer');
+
+/* ⏳ カウントダウン UI */
+const countdownEl=document.getElementById('countdown');
+const countDigit=document.getElementById('countDigit');
+
+/* ===========================================================
+   難易度（被覆率しきい値で判定）
+=========================================================== */
+const DIFFS={
+  easy:{probePct:0.85, bandTop:0.33, bandBot:0.63, halfPct:0.030, first:900, interval:700, hp:5},
+  normal:{probePct:0.55, bandTop:0.40, bandBot:0.57, halfPct:0.025, first:400, interval:550, hp:3},
+  hard:{probePct:0.40, bandTop:0.42, bandBot:0.55, halfPct:0.020, first:160, interval:350, hp:1}
+};
+let DIFF=DIFFS.normal; let MAX_HP=DIFF.hp, hp=MAX_HP;
+
+/* ===========================================================
+   ハート描画（シアン）
+=========================================================== */
+function renderHearts(){
+  heartsEl.innerHTML="";
+  for(let i=0;i<MAX_HP;i++){
+    const on=i<hp;
+    heartsEl.insertAdjacentHTML("beforeend",
+      `<div class="heart">
+        <svg viewBox="0 0 32 29">
+          <path d="M23.6,0c-2.6,0-4.9,1.3-6.6,3.2C15.3,1.3,13,0,10.4,0C4.7,0,0,4.7,0,10.4 c0,9.3,10.6,13.7,16.2,18.1c0.3,0.2,1.3,0.2,1.6,0C21.4,24.1,32,19.7,32,10.4C32,4.7,27.3,0,21.6,0H23.6z"
+            fill="${on?"#00eaff":"#004e52"}" stroke="${on?"#0098a8":"#003638"}" stroke-width="1.2"/>
+        </svg>
+      </div>`
+    );
+  }
+}
+renderHearts();
+
+/* ===========================================================
+   オフスクリーン canvas
+=========================================================== */
+const maskC=document.createElement('canvas'), mctx=maskC.getContext('2d',{willReadFrequently:true});
+const lavaC=document.createElement('canvas'), lctx=lavaC.getContext('2d');
+const sampleC=document.createElement('canvas'), sctx=sampleC.getContext('2d',{willReadFrequently:true});
+let sampleOut=null;
+
+function fit(){
+  const W=canvas.clientWidth*dpr, H=canvas.clientHeight*dpr;
+  canvas.width=W; canvas.height=H; maskC.width=W; maskC.height=H; lavaC.width=W; lavaC.height=H;
+  const sw=Math.max(220,W/1.8)|0, sh=Math.max(160,H/1.8)|0;
+  sampleC.width=sw; sampleC.height=sh; sampleOut=sctx.createImageData(sw,sh);
+  mctx.imageSmoothingEnabled=false;
+}
+addEventListener('resize',fit,{passive:true});
+fit();
+
+/* ===========================================================
+   白判定 (明・低彩度)
+=========================================================== */
+function buildWhiteMask(){
+  const sw=sampleC.width, sh=sampleC.height;
+  sctx.drawImage(video,0,0,sw,sh);
+  const img=sctx.getImageData(0,0,sw,sh); const d=img.data, o=sampleOut.data;
+  const minY=parseInt(minRGBInput.value,10); const diffTh=parseInt(maxDiffInput.value,10);
+  for(let i=0;i<d.length;i+=4){
+    const r=d[i],g=d[i+1],b=d[i+2];
+    const Y=0.2126*r+0.7152*g+0.0722*b; const diff=Math.max(Math.abs(r-g),Math.abs(g-b),Math.abs(b-r));
+    const maxv=Math.max(r,g,b), minv=Math.min(r,g,b); const sat=maxv<=1?0:(1-minv/maxv);
+    const isWhite=(Y>=minY)&&(diff<=diffTh)&&(sat<=0.25);
+    o[i]=255;o[i+1]=255;o[i+2]=255;o[i+3]=isWhite?255:0;
+  }
+  sctx.putImageData(sampleOut,0,0);
+  mctx.globalCompositeOperation='copy'; mctx.drawImage(sampleC,0,0,canvas.width,canvas.height);
+  mctx.globalCompositeOperation='source-over';
+}
+
+/* ===========================================================
+   溶岩描画（静止固定）
+=========================================================== */
+const lavaImg=new Image(); lavaImg.src='lava.jpg';
+function drawLava(){
+  const W=lavaC.width,H=lavaC.height,g=lctx; g.clearRect(0,0,W,H); if(!lavaImg.complete) return;
+  const scale=parseInt(lavaScale.value,10)/100; const contrast=parseInt(lavaContrast.value,10)/100; const saturate=parseInt(lavaSaturate.value,10)/100; const hue=parseInt(lavaHue.value,10);
+  lavaScalev.textContent=`${lavaScale.value}%`; lavaContrastv.textContent=`${lavaContrast.value}%`; lavaSaturatev.textContent=`${lavaSaturate.value}%`; lavaHuev.textContent=(hue>=0?'+':'')+lavaHue.value+'°';
+  minRGBv.textContent=minRGBInput.value; maxDiffv.textContent=maxDiffInput.value;
+
+  const tileW=Math.max(64,lavaImg.width*scale), tileH=Math.max(64,lavaImg.height*scale);
+  const tmp=document.createElement('canvas'); tmp.width=tileW; tmp.height=tileH; const tg=tmp.getContext('2d');
+  tg.filter=`contrast(${contrast}) saturate(${saturate}) brightness(1.05) hue-rotate(${hue}deg)`; tg.drawImage(lavaImg,0,0,tileW,tileH);
+  const pattern=g.createPattern(tmp,'repeat'); g.save(); g.fillStyle=pattern; g.fillRect(0,0,W,H); g.restore();
+  g.globalCompositeOperation='multiply'; g.globalAlpha=0.32; g.fillStyle='rgba(0,0,0,0.6)'; g.fillRect(0,0,W,H);
+  g.globalCompositeOperation='source-over'; g.globalAlpha=1;
+}
+
+/* ===========================================================
+   🔥 ダメージ/ヒット判定（中央プローブの被覆率）
+   🎯 コンボ/スコア（最初3回=3秒間隔 → 以降7秒）
+=========================================================== */
+let running=false, gameStarted=false, currentStream=null, videoReady=false;
+let inLava=false, damageAccum=0; let lastTs=performance.now();
+
+/* 🎯 コンボ/スコア関連 */
+let score=0;
+let safeAccum=0;       // 白線（安全帯）にいた累計
+let combo=0;           // 現在のコンボ数
+const FIRST_STAGE_COUNT=3;     // 最初の3コンボは3秒ごと
+const FIRST_STAGE_MS=3000;
+const LATER_STAGE_MS=7000;
+
+function comboThresholdMs(){ return (combo < FIRST_STAGE_COUNT) ? FIRST_STAGE_MS : LATER_STAGE_MS; }
+
+/* スコアHUD更新の節約 */
+let scoreHudCooldown=0;
+function addScore(amount){ score = Math.max(0, Math.floor(score + amount)); }
+
+/* 斜めコンボ演出 */
+function spawnComboPop(text, big=false){
+  const el=document.createElement('div'); el.className='combo-pop'+(big?' big':''); el.textContent=text;
+  const t = Math.random()*0.7 + 0.15;
+  const wrap = document.getElementById('wrap'); const W = wrap.clientWidth, H=wrap.clientHeight;
+  let x = t*W, y = (1-t)*H;
+  const avoid = (y > H*DIFF.bandTop && y < H*DIFF.bandBot); if(avoid){ y -= (H*0.08); }
+  x += (Math.random()*40-20); y += (Math.random()*30-15);
+  const rot = (-22 + Math.random()*12).toFixed(2)+'deg';
+  el.style.left = x+'px'; el.style.top = y+'px'; el.style.setProperty('--rot', rot);
+  document.getElementById('comboLayer').appendChild(el);
+  setTimeout(()=>{ try{ el.remove(); }catch{} }, 1200);
+}
+
+function onCombo(){
+  combo += 1;
+  const base = 200; const stageBonus = (combo <= FIRST_STAGE_COUNT ? 1 : 2);
+  addScore(base * stageBonus);
+  try{ const pitch = 1 + Math.min(0.4, combo*0.05); audio.play('combo',{gain:0.9, rate:pitch, when:0.005}); }catch{}
+  spawnComboPop(combo===1 ? "COMBO x1" : `COMBO x${combo}`, combo % 3 === 0 || combo>=4);
+  try{ audio.play('click',{gain:0.5, when:0.005}); }catch{}
+}
+
+/* 判定: 中央の小円領域の「白でない」割合＝マグマ被覆率 */
+function checkCollision(dtMs){
+  const SW=sampleC.width, SH=sampleC.height, CW=canvas.width, CH=canvas.height;
+  const sx=SW/CW, sy=SH/CH;
+
+  // プローブ位置（CSS: bottom:45% → 高さ55%付近）
+  const cx = CW*0.5, cy = CH*0.55;
+  const cxs = Math.floor(cx*sx), cys = Math.floor(cy*sy);
+
+  // サンプリング半径（画面幅の約1.2%）
+  const r = Math.max(4, Math.floor(CW*0.012*sx));
+
+  // 画像データ取得（A=0→白線、A>0→溶岩）
+  const data = sctx.getImageData(0,0,SW,SH).data;
+
+  let total=0, lavaCount=0;
+  for(let y=-r; y<=r; y++){
+    const yy = cys + y; if(yy<0||yy>=SH) continue;
+    for(let x=-r; x<=r; x++){
+      if(x*x + y*y > r*r) continue; // 円形領域
+      const xx = cxs + x; if(xx<0||xx>=SW) continue;
+      const a = data[((yy*SW+xx)<<2)+3];
+      total++;
+      if(a < 128) lavaCount++; // 透明度が低い=白線ではない→溶岩
+    }
+  }
+  const coverage = total>0 ? (lavaCount/total) : 0;
+  const HIT_TH = DIFF.probePct; // 難易度別しきい値
+  const want = (coverage >= HIT_TH);
+
+  if(want){
+    if(!inLava){ inLava=true; damageAccum=-DIFF.first; }
+    damageAccum+=dtMs;
+    safeAccum=0;
+    if(damageAccum>=0){
+      const was = hp; hp=Math.max(0,hp-1); if(was!==hp) renderHearts();
+      try{ (hp===0)?audio.play('hit2',{gain:1.0, when:0.005}) : audio.play('hit',{gain:0.95, when:0.005}); }catch{}
+      if(hp<=0){ audio.stopLoop(); overlayEl.style.display='flex'; gameStarted=false; }
+      damageAccum=-DIFF.interval;
+    }
+  }else{
+    inLava=false; damageAccum=0;
+    if(gameStarted){
+      safeAccum += dtMs;
+      addScore(dtMs * 0.5);
+      const need = comboThresholdMs();
+      if(safeAccum >= need){ safeAccum -= need; onCombo(); }
+    }
+  }
+}
+
+/* ===========================================================
+   ⏳ カウントダウン（3,2,1, START）— 毎回アニメを強制リセット
+=========================================================== */
+async function runCountdown(){
+  return new Promise(async (resolve)=>{
+    countdownEl.style.display='flex';
+    // reflowして描画反映を待つ（iOS/Safari対策）
+    await new Promise(r=>requestAnimationFrame(r));
+
+    const seq = ['3','2','1','START'];
+    for(let i=0;i<seq.length;i++){
+      const isStart = (seq[i]==='START');
+      countDigit.className = isStart ? 'start' : 'digit';
+
+      // アニメ強制リセット
+      countDigit.style.animation = 'none';
+      void countDigit.offsetWidth; // reflow
+      countDigit.style.animation = '';
+
+      countDigit.textContent = seq[i];
+
+      // 音
+      try{
+        if(isStart) audio.play('start',{gain:1.0, when:0});
+        else audio.play('countdown',{gain:0.9, when:0});
+      }catch{}
+
+      await new Promise(r=>setTimeout(r, isStart?700:820));
+    }
+    countdownEl.style.display='none';
+    resolve();
+  });
+}
+
+/* ===========================================================
+   カメラ起動（安定構造）
+=========================================================== */
+function markVideoReady(){ videoReady=(video.readyState>=2 && video.videoWidth>0 && video.videoHeight>0); }
+video.addEventListener('loadedmetadata',markVideoReady);
+video.addEventListener('playing',markVideoReady);
+
+async function ensureVideoAlive(){
+  if(video.srcObject && videoReady) return;
+  const stream=await navigator.mediaDevices.getUserMedia({
+    video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720},frameRate:{ideal:30,max:60}},
+    audio:false
+  });
+  if(currentStream) currentStream.getTracks().forEach(tr=>tr.stop());
+  currentStream=stream; video.srcObject=stream; await video.play();
+}
+async function startCamera(){ await ensureVideoAlive(); resetGame(); running=true; tapStart.style.display='none'; }
+
+/* ===========================================================
+   ゲーム開始 / リトライ
+=========================================================== */
+async function startGame(){
+  if(!video.srcObject){ alert('まず「カメラ開始」を押してね。'); return; }
+  await audio.unlock();
+  if(!audio.ready){
+    await audio.loadAll({
+      bgm:'bgm.mp3', hit:'hit.mp3', hit2:'hit2.mp3', click:'click.mp3', combo:'combo.mp3',
+      countdown:'countdown.mp3', start:'start.mp3'
+    });
+  }
+  markAudio(true);
+
+  // UIロック（設定いじれないように）
+  ui.style.opacity=0; ui.style.pointerEvents='none';
+  panel.style.opacity=0; panel.style.pointerEvents='none';
+
+  await runCountdown();
+
+  // スタート演出
+  audio.play('click',{gain:0.6, when:0});
+  audio.stopLoop(); audio.startLoop('bgm',{gain:0.35, offset:0});
+  lavaFlashEl.classList.add('show'); setTimeout(()=>lavaFlashEl.classList.remove('show'),240);
+
+  gameStarted=true;
+}
+startGameBtn.onclick = startGame;
+
+retryBtn.onclick=async()=>{
+  audio.play('click',{gain:0.6}); audio.stopLoop();
+  resetGame();
+  ui.style.opacity=1; ui.style.pointerEvents='auto';
+  panel.style.opacity=1; panel.style.pointerEvents='auto';
+  await ensureVideoAlive();
+};
+
+/* ===========================================================
+   カメラ切替 / device list
+=========================================================== */
+let deviceList=[], currentIndex=0;
+async function listVideoInputs(){
+  const devices=await navigator.mediaDevices.enumerateDevices();
+  deviceList=devices.filter(d=>d.kind==='videoinput');
+  devicesSel.innerHTML="";
+  deviceList.forEach((d,i)=>devicesSel.insertAdjacentHTML("beforeend",`<option value="${i}">${d.label||"Camera "+(i+1)}</option>`));
+}
+listVideoInputs();
+
+switchBtn.onclick=async()=>{
+  if(!deviceList.length) return;
+  currentIndex=(currentIndex+1)%deviceList.length;
+  const dev=deviceList[currentIndex];
+  const stream=await navigator.mediaDevices.getUserMedia({video:{deviceId:{exact:dev.deviceId}},audio:false});
+  if(currentStream) currentStream.getTracks().forEach(tr=>tr.stop());
+  currentStream=stream; video.srcObject=stream; await video.play();
+};
+
+/* ===========================================================
+   起動シーケンス（中央オーバーレイからでも、上部ボタンからでもOK）
+=========================================================== */
+tapStart.addEventListener('click', ()=>{ startSequence(); }, {passive:true});
+tapStartBtn.addEventListener('click',(e)=>{ e.stopPropagation(); startSequence(); }, {passive:false});
+startCamBtn.addEventListener('click',(e)=>{ e.preventDefault(); startSequence(); }, {passive:false});
+
+async function startSequence(){
+  await audio.unlock(); markAudio(audio.ctx && audio.ctx.state==='running');
+  if(!audio.ready){
+    try{
+      await audio.loadAll({
+        bgm:'bgm.mp3', hit:'hit.mp3', hit2:'hit2.mp3', click:'click.mp3', combo:'combo.mp3',
+        countdown:'countdown.mp3', start:'start.mp3'
+      });
+    }catch(e){}
+  }
+  await startCamera();
+}
+
+/* ===========================================================
+   リセット/難易度
+=========================================================== */
+function resetGame(){
+  DIFF=DIFFS[diffSel.value];
+  MAX_HP=DIFF.hp; hp=MAX_HP; renderHearts();
+  overlayEl.style.display='none';
+  inLava=false; damageAccum=0; lastTs=performance.now();
+
+  // スコア/コンボ初期化
+  score=0; safeAccum=0; combo=0;
+  scoreValueEl.textContent = "0";
+
+  // 演出レイヤー掃除
+  document.getElementById('comboLayer').innerHTML="";
+}
+diffSel.onchange=resetGame;
+
+/* ===========================================================
+   メイン loop（時間基準 / performance.now）
+=========================================================== */
+function drawCamera(){ ctx.clearRect(0,0,canvas.width,canvas.height); ctx.drawImage(video,0,0,canvas.width,canvas.height); }
+
+function loop(ts){
+  requestAnimationFrame(loop);
+  if(!running) return;
+
+  const W=canvas.clientWidth*dpr,H=canvas.clientHeight*dpr;
+  if(canvas.width!==W||canvas.height!==H){
+    canvas.width=W; canvas.height=H; maskC.width=W; maskC.height=H; lavaC.width=W; lavaC.height=H;
+  }
+  if(!videoReady){ drawCamera(); lastTs=ts||performance.now(); return; }
+
+  const now = (ts||performance.now());
+  const dtMs = Math.min(50, now - lastTs);
+  lastTs = now;
+
+  drawCamera();
+  buildWhiteMask();
+  drawLava();
+
+  // 合成
+  ctx.drawImage(lavaC,0,0);
+  ctx.globalCompositeOperation='destination-out'; ctx.drawImage(maskC,0,0);
+  ctx.globalCompositeOperation='source-over';
+
+  if(gameStarted) checkCollision(dtMs);
+
+  // スコアHUDの更新（200msに1回）
+  scoreHudCooldown += dtMs;
+  if(scoreHudCooldown >= 200){
+    scoreHudCooldown = 0;
+    scoreValueEl.textContent = String(Math.floor(score));
+  }
+}
+requestAnimationFrame(loop);
+
+})();</script>
+</body>
+</html>
